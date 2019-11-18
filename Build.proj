@@ -1,0 +1,515 @@
+<Project ToolsVersion="15.0" DefaultTargets="Build" InitialTargets="InitializeProperties;VerifyPathLength" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <UsingTask TaskName="CrawlerSchemaGenerator" AssemblyFile="$([MSBuild]::Unescape($(OutputPath)))\Coveo.Connectors.BuildProcess.dll" />
+  <UsingTask TaskName="GenerateCoveoConnectorsSchemas" AssemblyFile="$([MSBuild]::Unescape($(OutputPath)))\Coveo.Connectors.BuildProcess.dll" />
+  <UsingTask TaskName="MakeComponent" AssemblyFile="$([MSBuild]::Unescape($(OutputPath)))\Coveo.Connectors.BuildProcess.dll" />
+  
+  <Import Project="$(DE_DIR)\Build\MSBuild_12\Build\BuildFramework.xml"/>
+  <Import Project="$(DevBranch)\$(DevBranchDir)\Shared\Build\BuildTasks\Clean.proj"/>
+
+  <PropertyGroup>
+    <!-- Default values for build properties -->
+    <BuildTarget>Debug</BuildTarget>
+    <BuildPlatform>x64</BuildPlatform>
+    <Rebuild>false</Rebuild>
+    <BuildDate>$([System.DateTime]::UtcNow.ToString("u"))</BuildDate>
+
+    <!-- Version and copyrights info -->
+    <Company>Coveo Solutions Inc.</Company>
+    <CompanyUrl>http://www.coveo.com</CompanyUrl>
+    <Copyright>Copyright (c) 2004-$([System.DateTime]::Now.Year) , Coveo Solutions Inc.</Copyright>
+    <ProductName>Coveo Enterprise Search</ProductName>
+    <ProductNameForBuildIni>Connectors</ProductNameForBuildIni>
+
+    <!-- The version is set by the CI in the build pipeline and used to generate the AssemblyInfo files. -->
+    <MajorVersion>8</MajorVersion>
+    <MinorVersion>0</MinorVersion>
+    <BuildNumber>0</BuildNumber>
+    <BuildRevision>0</BuildRevision>
+
+    <!-- Build options -->
+    <IsReleaseBuild>false</IsReleaseBuild>      <!-- Whether or not this is a release build (branch starting with v8.0) -->
+    <IsOfficialBuild>false</IsOfficialBuild>    <!-- Whether or not this is an official build, which is not a feature branch (develop or release branch). Should be set only by the CI. -->
+    <IsLocalBuild>false</IsLocalBuild>
+    <IsLocalBuild Condition="!$(IsReleaseBuild) AND !$(IsOfficialBuild)">true</IsLocalBuild>
+
+    <!-- Ivy options -->
+    <IvyRefresh>false</IvyRefresh>              <!-- Forces computing of dynamic versions. -->
+    <IvyCache></IvyCache>                       <!-- Path of the ivy cache. -->
+    <IvySymlink>true</IvySymlink>               <!-- Whether or not to use sym links pointing on the ivy cache. Setting to false will copy all files (preferable if building in parallel). -->
+
+    <!-- Tests options -->
+    <TestsCategory>HEALTH</TestsCategory>
+
+    <!-- Dependent properties -->
+    <OutputPath>$(MSBuildProjectDirectory)\Bin\$(BuildPlatform)\$(BuildTarget)</OutputPath>
+    <BinaryFileSuffix Condition="'$(BuildTarget)'=='Debug'">$(MajorVersion)D</BinaryFileSuffix> <!-- Adds a D for debug. -->
+    <BinaryFileSuffix Condition="'$(BuildTarget)'=='Release'">$(MajorVersion)</BinaryFileSuffix>
+  </PropertyGroup>
+ 
+  <Target Name="InitializeProperties">
+    <CheckTargetPlatform BuildTarget="$(BuildTarget)" BuildPlatform="$(BuildPlatform)" Win32Supported="false" />
+
+    <PropertyGroup>
+        <CompleteVersion>$(MajorVersion).$(MinorVersion).$(BuildNumber).$(BuildRevision)</CompleteVersion>
+    </PropertyGroup>
+
+    <Message Text="Build version: $(CompleteVersion)" Importance="high" />
+  </Target>
+
+  <Target Name="VerifyPathLength">
+    <Error Condition = " '$(MSBuildThisFileDirectory.Length)' >= '44' "
+      Text = "Absolute path maximum length to the repository is 43. Current path: '$(MSBuildThisFileDirectory)'; Length: $(MSBuildThisFileDirectory.Length)" />
+  </Target>
+
+  <Target Name="Clean">
+    <DeleteDirectory Path="bin" />
+    <DeleteDirectory Path="obj" />
+  </Target>
+
+  <Target Name="Setup">
+    <!-- Setup dependencies using Ivy -->
+    <ItemGroup>
+      <!-- Tokens that need to be replaced in Ivy descriptor file. Also used for filters. -->
+      <!-- Key represents the token that appears in the Ivy template file and the value is -->
+      <!-- what is listed in the Include. Needs to be here so that dynamic values are filled properly. -->
+      <IvyTokens Include="$(BuildTarget)"><Key>target</Key></IvyTokens>
+      <IvyTokens Include="$(BuildPlatform)"><Key>platform</Key></IvyTokens>
+    </ItemGroup>
+
+    <IvyCreateDescriptor IvyTemplateFile="ivy.template.xml" OutputPath="$(OutputPath)" IvyTokens="@(IvyTokens)" FilterDefines="@(IvyTokens)">
+      <Output TaskParameter="IvyFile" PropertyName="IvyFile"/>
+    </IvyCreateDescriptor>
+
+    <!-- Execute ivy resolve and retrieve and Nuget restore -->
+    <IvyResolve
+      IvyFile="$(IvyFile)" Xms="128m" Xmx="1g"
+      Refresh="$(IvyRefresh)"
+      Local="$(IsLocalBuild)"
+      Official="$(IsOfficialBuild)"
+      Cache="$(IvyCache)"
+      ReportPath=".\resolvedrevisions.xml">
+      <Output TaskParameter="RetrievedRevisions" ItemName="RetrievedRevisions"/>
+    </IvyResolve>
+
+    <IvyRetrieve
+      IvyFile="$(IvyFile)" Xms="128m" Xmx="1g"
+      Refresh="$(IvyRefresh)"
+      Local="$(IsLocalBuild)"
+      Official="$(IsOfficialBuild)"
+      Cache="$(IvyCache)"
+      OutputPath="$(OutputPath)"
+      SourceRoot="$(MSBuildProjectDirectory)\dependencies"
+      symlink="$(IvySymlink)">
+      <Output TaskParameter="PostRetrieveBuildFiles" ItemName="PostRetrieveBuildFiles"/>
+    </IvyRetrieve>
+
+    <!-- Other required files -->
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\ConnectorsComponent\component_install.py;
+                   $(MSBuildProjectDirectory)\ConnectorsComponent\component_uninstall.py;"
+      DestinationFolder="$(OutputPath)" />
+
+    <Robocopy
+      Source="$(OutputPath)"
+      Destination="$(OutputPath)\Win32"
+      Files="log4net.dll; log4net.pdb; log4net.xml;"/>
+
+    <!-- Generate version files -->
+    <GenerateVersionFromTemplate
+      Template="$(MSBuildProjectDirectory)\Shared\AssemblyInfo.template"
+      Files="$(MSBuildProjectDirectory)\Shared\AssemblyInfo.cs"
+      ProductName="$(ProductName)"
+      Company="$(Company)"
+      Copyright="$(Copyright)"
+      MajorVersion="$(MajorVersion)"
+      MinorVersion="$(MinorVersion)"
+      BuildNumber="$(BuildNumber)"
+      BuildRevision="$(BuildRevision)" />
+    <GenerateVersionFromTemplate
+      Template="$(MSBuildProjectDirectory)\Shared\ConnectorsVersion.template"
+      Files="$(MSBuildProjectDirectory)\Connectors\Framework\ConnectorsVersion.cs"
+      MajorVersion="$(MajorVersion)"
+      MinorVersion="$(MinorVersion)"
+      BuildNumber="$(BuildNumber)"
+      Copyright="$(Copyright)" />
+    <GenerateVersionFromTemplate Condition="Exists('$(OutputPath)\ProductInfo.template')"
+      Template="$(OutputPath)\ProductInfo.template"
+      Files="$(OutputPath)\ProductInfo.txt"
+      ProductName="$(ProductName)"
+      MajorVersion="$(MajorVersion)"
+      MinorVersion="$(MinorVersion)"
+      BuildNumber="$(BuildNumber)"
+      BuildRevision="$(BuildRevision)"
+      BuildDate="$(BuildDate)" />
+  </Target>
+
+  <Target Name="RestoreNuGetPackagesValidatedBySnyk">
+    <!-- Used before scanning dependencies with Snyk. --> 
+    <Exec Command="nuget restore .\CustomCrawlers\VC14.0\CustomCrawlers.sln" />
+    <Exec Command="nuget restore .\JobHandlers\VC12.0\JobHandlers.sln" />
+  </Target>
+  
+  <Target Name="Build">
+    <!-- This is the default behavior of "dotnet build" in .NET Core. It restores packages before building. -->
+    <CallTarget Targets="RestoreNuGetPackagesValidatedBySnyk" />
+    <Exec Command="nuget restore .\LocalSetup\VC12.0\LocalSetup.sln" />
+    <Exec Command="nuget restore .\CustomCrawlers\Tools\VC12.0\Tools.sln" />
+    <Exec Command="nuget restore .\Build\BuildProcess.sln" />
+
+    <MSBuild
+      Properties="Configuration=$(BuildTarget); Platform=$(BuildPlatform); Rebuild=$(Rebuild)"
+      Projects="AnyCpuUtilities\VC12.0\AnyCPUUtilities.sln" />
+
+    <MSBuild
+      Properties="Configuration=$(BuildTarget); Platform=Win32; Rebuild=$(Rebuild)"
+      Projects="AnyCpuUtilities\VC12.0\AnyCPUUtilities.sln" />
+
+    <MSBuild
+      Properties="Configuration=$(BuildTarget); Platform=$(BuildPlatform); Rebuild=$(Rebuild)"
+      Projects="CustomCrawlers\VC14.0\CustomCrawlers.sln" />
+
+    <MSBuild
+      Properties="Configuration=$(BuildTarget); Platform=$(BuildPlatform); Rebuild=$(Rebuild)"
+      Projects="Build\BuildProcess.sln" />
+
+    <MSBuild
+      Properties="Configuration=$(BuildTarget); Platform=$(BuildPlatform); Rebuild=$(Rebuild)"
+      Projects="JobHandlers\VC12.0\JobHandlers.sln;
+                LocalSetup\VC12.0\LocalSetup.sln;
+                CustomCrawlers\Tools\VC12.0\Tools.sln"
+      BuildInParallel="true" />
+
+    <GenerateCoveoConnectorsSchemas
+      BuildTarget="$(BuildTarget)"
+      Version="$(CompleteVersion)"
+      OutputPath="$(OutputPath)"
+      RootPath="$(MSBuildProjectDirectory)"
+      ScriptsDir="$(MSBuildProjectDirectory)\Build\Scripts"
+      Configuration="ConnectorsComponent\component_info.xml"
+      ConfigurationOnPrem="ConnectorsOnPremComponent\component_info.xml" />
+
+    <CrawlerSchemaGenerator BinPath="$(OutputPath)" />
+  </Target>
+
+  <Target Name="Package">
+    <CallTarget Targets="CoveoJobHandlersComponent"/>
+    <CallTarget Targets="CoveoConnectorsComponent"/>
+    <CallTarget Targets="CoveoConnectorsOnPremComponent"/>
+    <CallTarget Targets="CoveoSecurityProvidersComponent"/>
+    <CallTarget Targets="CopyFilesForDocker"/>
+    <CallTarget Targets="CreateDeploymentPackage"/>
+  </Target>
+  <Target Name="PrepareDockerTests">
+	<CallTarget Targets="CopyFilesForDocker"/>
+	<CallTarget Targets="CopyFilesForDockerADTests"/>
+  </Target>
+	
+  <Target Name="VeracodePackage">
+    <Create7zArchive ArchivePath="$(OutputPath)\VeracodeBin.zip"
+      FilePaths="$(OutputPath)\*.dll;
+                 $(OutputPath)\*.pdb"
+      Exclude="$(OutputPath)\*UnitTest*;
+               $(OutputPath)\*FunctionalTests*;
+               $(OutputPath)\*PerformanceTests*;
+               $(OutputPath)\Coveo.Connectors.Tool*;
+               $(OutputPath)\Coveo.CES.CustomCrawlers.Tool*;
+               $(OutputPath)\Coveo.CES.SecurityProviders.Tool*;
+               $(OutputPath)\Coveo.Connectors.LocalSetup*;
+               $(OutputPath)\*CrawlerSchemaGenerator*;
+               $(OutputPath)\*ScriptSharp*;
+               $(OutputPath)\*DocumentConsumer*;
+               $(OutputPath)\Coveo.CES.CustomCrawlers.Sample.*;
+               $(OutputPath)\Coveo.Connectors.Sample.*"
+               
+      Format="zip"/>
+  </Target>
+
+  <Target Name="CoveoConnectorsComponent">
+    <ListFolders Path="$(MSBuildProjectDirectory)\ConnectorsComponent" Pattern="InstanceTemplate">
+        <Output PropertyName="ConnectorsInstances" TaskParameter="Folders" />
+    </ListFolders>
+    <ListFiles Path="$(MSBuildProjectDirectory)\ConnectorsComponent" Pattern="(Crawler\.json|component_info)" Recurse="true">
+        <Output PropertyName="ConnectorsComponentFilesToReplace" TaskParameter="Files" />
+    </ListFiles>
+    <ItemGroup>
+      <DestCon Include="$(ConnectorsInstances)"/>
+    </ItemGroup>
+
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\ConnectorsComponent\Shared\Logger.json;
+                   $(MSBuildProjectDirectory)\ConnectorsComponent\Shared\Logger.log4net;
+                   $(MSBuildProjectDirectory)\ConnectorsComponent\Shared\CmfAutoConfig.json"
+      DestinationFolder="%(DestCon.FullPath)" />
+
+    <ReplaceTags
+      Files="$(MSBuildProjectDirectory)\ConnectorsComponent\Salesforce2InstanceTemplate\Logger.log4net"
+      Tags="ES_INDEX|backend-connectors = ES_INDEX|backend-connectors-salesforce" />
+
+    <MakeComponent
+      Name="CoveoConnectorsComponentPackage"
+      BuildPlatform="$(BuildPlatform)"
+      BuildTarget="$(BuildTarget)"
+      Version="$(CompleteVersion)"
+      OutputPath="$(OutputPath)\NodeManagement\Components"
+      ReplaceTags="~~BinaryFileSuffix~~=$(BinaryFileSuffix);
+                   ~~ComponentVersion~~=$(CompleteVersion);
+                   ~~BinPath~~=bin;
+                   ~~Location~~="
+      RootDir="$(MSBuildProjectDirectory)"
+      ScriptsDir="$(MSBuildProjectDirectory)\Build\Scripts"
+      ReplaceInFiles="$(ConnectorsComponentFilesToReplace)"
+      Configuration="ConnectorsComponent\component_info.xml"
+      FilesList="ConnectorsComponent\FilesList.xml"
+      Instances="$(ConnectorsInstances)"/>
+  </Target>
+
+  <Target Name="CoveoConnectorsOnPremComponent">
+    <ListFolders Path="$(MSBuildProjectDirectory)\ConnectorsOnPremComponent" Pattern="InstanceTemplate">
+        <Output PropertyName="ConnectorsOnPremInstances" TaskParameter="Folders" />
+    </ListFolders>
+    <ListFiles Path="$(MSBuildProjectDirectory)\ConnectorsOnPremComponent" Pattern="(Crawler\.json|component_info)" Recurse="true">
+        <Output PropertyName="ConnectorsOnPremComponentFilesToReplace" TaskParameter="Files" />
+    </ListFiles>
+    <ItemGroup>
+      <DestConOnPrem Include="$(ConnectorsOnPremInstances)"/>
+    </ItemGroup>
+
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\ConnectorsOnPremComponent\Shared\Logger.json;
+                       $(MSBuildProjectDirectory)\ConnectorsOnPremComponent\Shared\Logger.log4net;
+                       $(MSBuildProjectDirectory)\ConnectorsOnPremComponent\Shared\CmfAutoConfig.json"
+          DestinationFolder="%(DestConOnPrem.FullPath)"/>
+
+    <MakeComponent
+      Name="CoveoConnectorsOnPremComponentPackage"
+      BuildPlatform="$(BuildPlatform)"
+      BuildTarget="$(BuildTarget)"
+      Version="$(CompleteVersion)"
+      OutputPath="$(OutputPath)\NodeManagement\Components"
+      ReplaceTags="~~BinaryFileSuffix~~=$(BinaryFileSuffix);
+                   ~~ComponentVersion~~=$(CompleteVersion);
+                   ~~BinPath~~=bin;
+                   ~~Location~~="
+      RootDir="$(MSBuildProjectDirectory)"
+      ScriptsDir="$(MSBuildProjectDirectory)\Build\Scripts"
+      ReplaceInFiles="$(ConnectorsOnPremComponentFilesToReplace)"
+      Configuration="ConnectorsOnPremComponent\component_info.xml"
+      FilesList="ConnectorsOnPremComponent\FilesList.xml"
+      Instances="$(ConnectorsOnPremInstances)"/>
+  </Target>
+
+  <Target Name="CoveoJobHandlersComponent">
+    <ListFolders Path="$(MSBuildProjectDirectory)\JobHandlersComponent" Pattern="InstanceTemplate">
+        <Output PropertyName="JobHandlersInstances" TaskParameter="Folders" />
+    </ListFolders>
+    <ListFiles Path="$(MSBuildProjectDirectory)\JobHandlersComponent" Pattern="(JobHandler\.json|component_info)" Recurse="true">
+        <Output PropertyName="JobHandlersComponentFilesToReplace" TaskParameter="Files" />
+    </ListFiles>
+    <ItemGroup>
+      <DestJh Include="$(JobHandlersInstances)"/>
+    </ItemGroup>
+
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\JobHandlersComponent\Shared\Logger.log4net"
+      DestinationFolder="%(DestJh.FullPath)" />
+
+    <MakeComponent
+      Name="JobHandlersComponentPackage"
+      BuildPlatform="$(BuildPlatform)"
+      BuildTarget="$(BuildTarget)"
+      Version="$(CompleteVersion)"
+      OutputPath="$(OutputPath)\NodeManagement\Components"
+      ReplaceTags="~~BinaryFileSuffix~~=$(BinaryFileSuffix);
+                   ~~ComponentVersion~~=$(CompleteVersion);
+                   ~~BinPath~~=bin;
+                   ~~Location~~="
+      RootDir="$(MSBuildProjectDirectory)"
+      ScriptsDir="$(MSBuildProjectDirectory)\Build\Scripts"
+      ReplaceInFiles="$(JobHandlersComponentFilesToReplace)"
+      Configuration="JobHandlersComponent\component_info.xml"
+      FilesList="JobHandlersComponent\FilesList.xml"
+      Instances="$(JobHandlersInstances)"/>
+  </Target>
+
+  <Target Name="CoveoSecurityProvidersComponent">
+    <ListFolders Path="$(MSBuildProjectDirectory)\SecurityProvidersComponent" Pattern="InstanceTemplate">
+        <Output PropertyName="SecurityProvidersInstances" TaskParameter="Folders" />
+    </ListFolders>
+    <ListFiles Path="$(MSBuildProjectDirectory)\SecurityProvidersComponent" Pattern="(SecurityProvider\.json|component_info)" Recurse="true">
+        <Output PropertyName="SecurityProvidersComponentFilesToReplace" TaskParameter="Files" />
+    </ListFiles>
+    <ItemGroup>
+	    <DestCsp Include="$(SecurityProvidersInstances)"/>
+	  </ItemGroup>
+
+    <Copy
+      SourceFiles="$(MSBuildProjectDirectory)\SecurityProvidersComponent\Shared\Logger.log4net;
+                   $(MSBuildProjectDirectory)\SecurityProvidersComponent\Shared\CmfAutoConfig.json"
+      DestinationFolder="%(DestCsp.FullPath)" />
+      
+    <ReplaceTags
+      Files="$(MSBuildProjectDirectory)\SecurityProvidersComponent\SalesforceInstanceTemplate\Logger.log4net"
+      Tags="ES_INDEX|backend-connectors = ES_INDEX|backend-connectors-salesforce" />
+
+    <Create7zArchive
+      ArchivePath="$(OutputPath)\OnPremisesPermissionsExpanderConfigSamples.zip"
+      FilePaths="$(OutputPath)\OnPremisesPermissionsExpanderConfigSamples\*"
+      Recurse="true"
+      Format="zip"/>
+
+    <MakeComponent
+      Name="SecurityProvidersComponentPackage"
+      BuildPlatform="$(BuildPlatform)"
+      BuildTarget="$(BuildTarget)"
+      Version="$(CompleteVersion)"
+      OutputPath="$(OutputPath)/NodeManagement/Components"
+      ReplaceTags="~~BinaryFileSuffix~~=$(BinaryFileSuffix);
+                   ~~ComponentVersion~~=$(CompleteVersion);
+                   ~~BinPath~~=bin;
+                   ~~Location~~="
+      RootDir="$(MSBuildProjectDirectory)"
+      ScriptsDir="$(MSBuildProjectDirectory)\Build\Scripts"
+      ReplaceInFiles="$(SecurityProvidersComponentFilesToReplace)"
+      Configuration="SecurityProvidersComponent\component_info.xml"
+      FilesList="SecurityProvidersComponent\FilesList.xml"
+      Instances="$(SecurityProvidersInstances)"/>
+  </Target>
+
+  <Target Name="CopyFilesForDocker"
+          DependsOnTargets="CoveoJobHandlersComponent;CoveoConnectorsComponent;CoveoConnectorsOnPremComponent;CoveoSecurityProvidersComponent">
+    <!-- Copy the files needed to buid the Windows docker container -->
+    <Robocopy
+        Source="$(MSBuildProjectDirectory)\Docker"
+        Destination="$(OutputPath)\Docker"
+        Recurse="true"
+        Files="*" />
+
+    <!-- We need to copy the component definitions of the JobHandler and Connectors package in the NodeAgentContent files and replace all required tags and stuff
+         NOTE that the order of the tags matter here! -->
+    <ReplaceTags
+        Files="$(OutputPath)\Docker\cluster-worker-crawler\NodeAgentContent.xml;
+               $(OutputPath)\Docker\cluster-worker-provider\NodeAgentContent.xml;
+               $(OutputPath)\Docker\crawling-module-worker\NodeAgentContent.xml"
+
+        Tags="~~JobHandlersComponentDefinition~~        =   $([System.IO.File]::ReadAllText($(MSBuildProjectDirectory)\JobHandlersComponent\component_info.xml));
+              ~~Location~~                              =   file:\\\C:\coveo\packages\JobHandlersComponentPackage.zip;
+              ~~ConnectorsComponentDefinition~~         =   $([System.IO.File]::ReadAllText($(MSBuildProjectDirectory)\ConnectorsComponent\component_info.xml));
+              ~~Location~~                              =   file:\\\C:\coveo\packages\CoveoConnectorsComponentPackage.zip;
+              ~~JobHandlersComponentDefinition~~        =   $([System.IO.File]::ReadAllText($(MSBuildProjectDirectory)\JobHandlersComponent\component_info.xml));
+              ~~Location~~                              =   file:\\\C:\coveo\packages\JobHandlersComponentPackage.zip;
+              ~~SecurityProvidersComponentDefinition~~  =   $([System.IO.File]::ReadAllText($(MSBuildProjectDirectory)\SecurityProvidersComponent\component_info.xml));
+              ~~Location~~                              =   file:\\\C:\coveo\packages\SecurityProvidersComponentPackage.zip;
+              ~~ConnectorsOnPremComponentDefinition~~   =   $([System.IO.File]::ReadAllText($(MSBuildProjectDirectory)\ConnectorsOnPremComponent\component_info.xml));
+              ~~Location~~                              =   file:\\\C:\coveo\packages\CoveoConnectorsOnPremComponentPackage.zip;
+              ComponentDefinition>                      =   Definition>;
+              ~~BinPath~~                               =   bin;
+              ~~ComponentVersion~~                      =   $(CompleteVersion);
+              ~~BinaryFileSuffix~~                      =   $(BinaryFileSuffix)" />
+
+    <ReplaceTags
+        Files="$(OutputPath)\Docker\connectors-base-win\connectors-base-win.Dockerfile;
+               $(OutputPath)\Docker\mysql-base-win\mysql-base-win.Dockerfile;
+               $(OutputPath)\Docker\cluster-worker-crawler\cluster-worker-crawler.Dockerfile;
+               $(OutputPath)\Docker\cluster-worker-provider\cluster-worker-provider.Dockerfile;
+               $(OutputPath)\Docker\dump-collector-win\dump-collector-win.Dockerfile;
+               $(OutputPath)\Docker\crawling-module-worker\crawling-module-worker.Dockerfile;
+               $(OutputPath)\Docker\crawling-module-mysql\crawling-module-mysql.Dockerfile;
+               $(OutputPath)\Docker\crawling-module-mysql8\crawling-module-mysql8.Dockerfile"
+        Tags="~~BinaryFileSuffix~~=$(BinaryFileSuffix);
+              ~~BuildTargetSuffix~~=$(BuildTargetSuffix);
+              ~~ComponentVersion~~=$(CompleteVersion)" />
+
+    <ItemGroup>
+      <PackagesDirs Include="$(OutputPath)\Docker\cluster-worker-crawler\packages;
+                             $(OutputPath)\Docker\cluster-worker-provider\packages;
+                             $(OutputPath)\Docker\crawling-module-worker\packages" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="$(OutputPath)\NodeManagement\WindowsAgent\WindowsHostScripts.zip;
+                   $(OutputPath)\NodeManagement\WindowsAgent\WindowsnodeAgent.zip;
+                   $(OutputPath)\NodeManagement\Components\JobHandlersComponentPackage.zip"
+      DestinationFolder="%(PackagesDirs.FullPath)"/>
+
+    <Copy
+        SourceFiles="$(OutputPath)\NodeManagement\Components\CoveoConnectorsComponentPackage.zip"
+        DestinationFiles="$(OutputPath)\Docker\cluster-worker-crawler\packages\CoveoConnectorsComponentPackage.zip" />
+    <Copy
+        SourceFiles="$(OutputPath)\NodeManagement\Components\SecurityProvidersComponentPackage.zip"
+        DestinationFiles="$(OutputPath)\Docker\cluster-worker-provider\packages\SecurityProvidersComponentPackage.zip" />
+    <Copy
+        SourceFiles="$(OutputPath)\NodeManagement\Components\CoveoConnectorsOnPremComponentPackage.zip"
+        DestinationFiles="$(OutputPath)\Docker\crawling-module-worker\packages\CoveoConnectorsOnPremComponentPackage.zip" />
+    <Copy
+        SourceFiles="$(OutputPath)\NodeManagement\WindowsAgent\WindowsHostScripts.zip"
+        DestinationFiles="$(OutputPath)\Docker\dump-collector-win\WindowsHostScripts.zip" />
+  </Target>
+
+  <Target Name="CopyFilesForDockerADTests">
+    <!-- Copy the files needed to build the Windows docker container to run the AD tests. -->
+	<ReplaceTags
+		Files="$(OutputPath)\Docker\crawling-module-tests\crawling-module-tests.Dockerfile;"
+		Tags="~~ComponentVersion~~=$(CompleteVersion)" />
+	
+	<ItemGroup>
+		<ConnectorsBin Include="$(OutputPath)\Docker\crawling-module-tests\connectors-bin" />
+	</ItemGroup>
+	<ItemGroup>
+		<NunitTools Include="$(OutputPath)\Docker\crawling-module-tests\nunit-tools" />
+	</ItemGroup>
+	<ItemGroup>
+		<CopyNunitTools Include="C:\Users\$(USERNAME)\.nuget\packages\nunit.consolerunner\3.10.0\tools\*.*" />
+	</ItemGroup>
+	<ItemGroup>
+		<CopyConnectorsBin Include="$(OutputPath)\*.*" />
+	</ItemGroup>
+	<Copy
+		SourceFiles="@(CopyConnectorsBin)"
+		DestinationFolder="%(ConnectorsBin.FullPath)" />
+	<Copy
+		SourceFiles="@(CopyNunitTools)"
+		DestinationFolder="%(NunitTools.FullPath)" />
+  </Target>
+  
+  <!-- This target creates a zip file for the infrastructure deployment and required files. -->
+  <Target Name="CreateDeploymentPackage" DependsOnTargets="CopyFilesForDocker">
+    <Robocopy Source="$(MSBuildProjectDirectory)" Files=".tgf.config;" Destination="$(OutputPath)\tmpDeployPackage"/>
+    <Robocopy Source="$(MSBuildProjectDirectory)\deployment" Files="*.*" Destination="$(OutputPath)\tmpDeployPackage\deployment" Recurse="true" />
+    <Robocopy Source="$(MSBuildProjectDirectory)\modules" Files="*.*" Destination="$(OutputPath)\tmpDeployPackage\modules" Recurse="true" />
+    <Robocopy Source="$(OutputPath)" Files="DefaultFields.json; DefaultMappings.json; *.Schema.json;" Destination="$(OutputPath)\tmpDeployPackage\modules\BuildArtifacts\schemas" />
+
+    <Copy SourceFiles="$(OutputPath)\NodeManagement\Components\CoveoConnectorsComponentPackage.zip;
+                       $(OutputPath)\NodeManagement\Components\SecurityProvidersComponentPackage.zip;
+                       $(OutputPath)\NodeManagement\Components\JobHandlersComponentPackage.zip"
+          DestinationFolder="$(OutputPath)\tmpDeployPackage\modules\BuildArtifacts\componentPackages" />
+
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\Connectors\Confluence2\Plugin\CoveoEnhancedRestApi\CoveoConfluenceEnhancedRestApi-1.0.jar;
+                       $(MSBuildProjectDirectory)\Connectors\Confluence2\Plugin\CoveoEnhancedRestApi\CoveoConfluenceEnhancedRestApi-1.1.jar;
+                       $(MSBuildProjectDirectory)\Connectors\Jira2\Plugin\CoveoEnhancedRestApi\CoveoEnhancedRestApi.jar;
+                       $(MSBuildProjectDirectory)\Connectors\Jira2\Plugin\CoveoEnhancedRestApi7\CoveoEnhancedRestApi7.jar;
+                       $(MSBuildProjectDirectory)\Connectors\Jive\Plugin\Jive8\coveo-plugin-for-jive-1.2.jar"
+          DestinationFolder="$(OutputPath)\tmpDeployPackage\modules\BuildArtifacts\plugins" />
+
+    <ReplaceTags Files="$(OutputPath)\tmpDeployPackage\deployment\coveo-cluster-infrastructure\terraform.tfvars;
+                        $(OutputPath)\tmpDeployPackage\deployment\coveo-cluster-infrastructure\security-providers\terraform.tfvars;"
+                 Tags="~~ComponentVersion~~=$(CompleteVersion);" />
+
+    <Create7zArchive ArchivePath="$(OutputPath)\DeploymentPackage.zip" FilePaths="$(OutputPath)\tmpDeployPackage\*" Recurse="true" Format="zip"/>
+    <RemoveDir Directories="$(OutputPath)\tmpDeployPackage"/>
+  </Target>
+
+  <Target Name="Tests">
+    <ListFiles Path="$(OutputPath)\" Pattern=".*(UnitTests|PerformanceTests|FunctionalTests).*dll$" Recurse="true">
+        <Output PropertyName="UnitTestAssemblies" TaskParameter="Files" />
+    </ListFiles>
+
+    <Nunit3
+      Assemblies="$(UnitTestAssemblies)"
+      ToolPath="C:\Users\$(USERNAME)\.nuget\packages\nunit.consolerunner\3.10.0\tools"
+      OutputXmlFile="$(OutputPath)\TestsResults.xml"
+      Where="cat == $([System.String]::Copy($(TestsCategory)).Replace(',', ' || cat == '))"
+      ContinueOnError="true"
+      EnableShadowCopy="false"
+      ShowLabels="After"
+      Process="Single"
+      InternalTrace="Off" />
+  </Target>
+</Project>

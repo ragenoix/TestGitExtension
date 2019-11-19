@@ -23,7 +23,7 @@
     <!-- The version is set by the CI in the build pipeline and used to generate the AssemblyInfo files. -->
     <MajorVersion>8</MajorVersion>
     <MinorVersion>0</MinorVersion>
-    <BuildNumber>0</BuildNumber>
+    <BuildNumber>4471</BuildNumber>
     <BuildRevision>0</BuildRevision>
 
     <!-- Build options -->
